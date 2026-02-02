@@ -7,4 +7,4 @@ class ItemTimingBenchmark(Base):
     hero_id = Column(Integer)
     item_id = Column(Integer)
     minute = Column(Integer)
-    expected_win_rate = Column(Float) # Historical WR if bought at this minute
+    expected_win_rate = Column(Float)
