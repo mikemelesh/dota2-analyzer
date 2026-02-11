@@ -9,12 +9,12 @@ def _team_won(m: dict, is_radiant_team: bool) -> bool:
     return (radiant and radiant_win) or (not radiant and not radiant_win)
 
 
-async def get_team_form(team_id: int, last_n: int = 10) -> tuple[float, list[dict]]:
-    """Returns (win_rate, matches). Uses recent matches for form."""
+async def get_team_form(team_id: int, last_n: int = 10) -> tuple[float, list[dict], dict]:
+    """Returns (win_rate, matches, team). Uses recent matches for form."""
     try:
         team = await get_team(team_id)
     except Exception:
-        return (0.5, [])
+        return (0.5, [], {})
     try:
         matches = await get_team_matches(team_id)
     except Exception:
@@ -26,19 +26,13 @@ async def get_team_form(team_id: int, last_n: int = 10) -> tuple[float, list[dic
         wins = team.get("wins") or 0
         losses = team.get("losses") or 0
         total = wins + losses
-        return (wins / total if total > 0 else 0.5, [])
+        return (wins / total if total > 0 else 0.5, [], team)
     wins = sum(1 for m in recent if isinstance(m, dict) and _team_won(m, True))
-    return (wins / len(recent), recent)
+    return (wins / len(recent), recent, team)
 
 
-async def get_head_to_head(radiant_team_id: int, dire_team_id: int) -> float | None:
+def _head_to_head_from_matches(rad_matches: list[dict], dire_team_id: int) -> float | None:
     """Win rate of radiant vs dire from past matches. Returns None if no H2H."""
-    try:
-        rad_matches = await get_team_matches(radiant_team_id)
-    except Exception:
-        return None
-    if not isinstance(rad_matches, list):
-        rad_matches = list(rad_matches.values()) if isinstance(rad_matches, dict) else []
     h2h = [m for m in rad_matches if isinstance(m, dict) and m.get("opposing_team_id") == dire_team_id]
     if not h2h:
         return None
@@ -50,18 +44,10 @@ async def prematch_win_probability(radiant_team_id: int, dire_team_id: int) -> d
     """
     Pre-match win probability for Radiant.
     Combines: team form (recent matches) + head-to-head + overall rating.
+    Fetches each team+matches once (no duplicate OpenDota calls).
     """
-    rad_form, rad_matches = await get_team_form(radiant_team_id)
-    dire_form, dire_matches = await get_team_form(dire_team_id)
-
-    try:
-        rad_team = await get_team(radiant_team_id)
-    except Exception:
-        rad_team = {}
-    try:
-        dire_team = await get_team(dire_team_id)
-    except Exception:
-        dire_team = {}
+    rad_form, rad_matches, rad_team = await get_team_form(radiant_team_id)
+    dire_form, dire_matches, dire_team = await get_team_form(dire_team_id)
 
     rad_rating = rad_team.get("rating") or 1000
     dire_rating = dire_team.get("rating") or 1000
@@ -79,7 +65,7 @@ async def prematch_win_probability(radiant_team_id: int, dire_team_id: int) -> d
     else:
         form_prob = 0.5
 
-    h2h_prob = await get_head_to_head(radiant_team_id, dire_team_id)
+    h2h_prob = _head_to_head_from_matches(rad_matches, dire_team_id)
 
     # Weighted blend: rating 40%, form 40%, H2H 20% (if available)
     weights = {"rating": 0.4, "form": 0.4, "h2h": 0.2}

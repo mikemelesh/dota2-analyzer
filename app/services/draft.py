@@ -1,4 +1,6 @@
 """Draft-phase analysis: hero WR, player WR, versus WR, synergy."""
+import asyncio
+
 from app.services.opendota import (
     get_hero_stats,
     get_hero_matchups,
@@ -26,6 +28,11 @@ async def _hero_win_rates() -> dict[int, float]:
             wr = 0.5
         out[pid] = wr
     return out
+
+
+async def _const(val: float):
+    """Return a constant (for use when we skip an API call)."""
+    return val
 
 
 async def get_player_hero_win_rate(account_id: int, hero_id: int) -> float:
@@ -83,29 +90,53 @@ async def draft_win_probability(
     3. Versus win rate (hero vs enemy heroes)
     4. Synergy (heroes on same team)
     """
-    hero_wrs = await _hero_win_rates()
     rad_hero_ids = [p["hero_id"] for p in radiant_picks]
     dire_hero_ids = [p["hero_id"] for p in dire_picks]
 
-    rad_scores = []
-    dire_scores = []
-    rad_breakdown = []
-    dire_breakdown = []
+    rad_pl_tasks = [
+        get_player_hero_win_rate(p.get("account_id", 0), p["hero_id"]) if p.get("account_id") else _const(0.5)
+        for p in radiant_picks
+    ]
+    dire_pl_tasks = [
+        get_player_hero_win_rate(p.get("account_id", 0), p["hero_id"]) if p.get("account_id") else _const(0.5)
+        for p in dire_picks
+    ]
+    rad_vs_tasks = [get_versus_win_rate(hid, dire_hero_ids) for hid in rad_hero_ids]
+    dire_vs_tasks = [get_versus_win_rate(hid, rad_hero_ids) for hid in dire_hero_ids]
 
-    for p in radiant_picks:
+    hero_wrs, *rest = await asyncio.gather(
+        _hero_win_rates(),
+        *rad_pl_tasks,
+        *dire_pl_tasks,
+        *rad_vs_tasks,
+        *dire_vs_tasks,
+        get_draft_matchup_win_rate(rad_hero_ids, dire_hero_ids),
+    )
+    n_rad, n_dire = len(radiant_picks), len(dire_picks)
+    rad_pl_wrs = list(rest[:n_rad])
+    dire_pl_wrs = list(rest[n_rad : n_rad + n_dire])
+    rad_vs_wrs = list(rest[n_rad + n_dire : n_rad + n_dire + n_rad])
+    dire_vs_wrs = list(rest[n_rad + n_dire + n_rad : -1])
+    draft_matchup_wr = rest[-1]
+
+    rad_scores = []
+    rad_breakdown = []
+    for i, p in enumerate(radiant_picks):
         hid = p["hero_id"]
         h_wr = hero_wrs.get(hid, 0.5)
-        pl_wr = await get_player_hero_win_rate(p.get("account_id", 0), hid) if p.get("account_id") else 0.5
-        vs_wr = await get_versus_win_rate(hid, dire_hero_ids)
+        pl_wr = rad_pl_wrs[i] if i < len(rad_pl_wrs) else 0.5
+        vs_wr = rad_vs_wrs[i] if i < len(rad_vs_wrs) else 0.5
         score = h_wr * 0.35 + pl_wr * 0.35 + vs_wr * 0.3
         rad_scores.append(score)
         rad_breakdown.append({"hero_wr": h_wr, "player_wr": pl_wr, "versus_wr": vs_wr})
 
-    for p in dire_picks:
+    dire_scores = []
+    dire_breakdown = []
+    for i, p in enumerate(dire_picks):
         hid = p["hero_id"]
         h_wr = hero_wrs.get(hid, 0.5)
-        pl_wr = await get_player_hero_win_rate(p.get("account_id", 0), hid) if p.get("account_id") else 0.5
-        vs_wr = await get_versus_win_rate(hid, rad_hero_ids)
+        pl_wr = dire_pl_wrs[i] if i < len(dire_pl_wrs) else 0.5
+        vs_wr = dire_vs_wrs[i] if i < len(dire_vs_wrs) else 0.5
         score = h_wr * 0.35 + pl_wr * 0.35 + vs_wr * 0.3
         dire_scores.append(score)
         dire_breakdown.append({"hero_wr": h_wr, "player_wr": pl_wr, "versus_wr": vs_wr})
